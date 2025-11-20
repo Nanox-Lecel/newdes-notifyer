@@ -448,23 +448,37 @@ class StorageTemperatureReader:
         except Exception as e:
             return f"Error getting sensor info: {e}"
 
-class DateSearchExportWindow:
-    """Modal window for date range search and export - separate from Live Logs"""
-    def __init__(self, parent, log_manager, theme_manager):
+class SearchResultModal:
+    """Modal window to display search results with time range and history graph"""
+    def __init__(self, parent, start_datetime, end_datetime, logs, theme_manager):
         self.parent = parent
-        self.log_manager = log_manager
+        self.start_datetime = start_datetime
+        self.end_datetime = end_datetime
+        self.logs = logs
         self.theme_manager = theme_manager
         self.colors = self.theme_manager.get_theme()
         self.window = None
-        self.current_logs = []
-        self.create_window()
-        
-    def create_window(self):
-        """Create the date search and export modal window"""
+        self.create_modal()
+    
+    def create_modal(self):
+        """Create the search result modal window"""
         self.window = tk.Toplevel(self.parent)
-        self.window.title("Search and Export Logs by Date Range")
-        self.window.geometry("900x600")
-        # FIXED CONDITION 4: Set proper background color for window and all frames
+        self.window.title("Search Results - Temperature History")
+        
+        # CONDITION 2 FIXED: Responsive window sizing
+        screen_width = self.window.winfo_screenwidth()
+        screen_height = self.window.winfo_screenheight()
+        window_width = min(1200, screen_width - 100)
+        window_height = min(800, screen_height - 100)
+        self.window.geometry(f"{window_width}x{window_height}")
+        self.window.minsize(1000, 700)
+        
+        # Center the window on screen
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        self.window.geometry(f"+{x}+{y}")
+        
+        # Set proper background color
         if self.colors['background'] == '#0f172a':  # Dark mode
             bg_color = '#1e293b'
             text_bg = '#1e293b'
@@ -478,85 +492,464 @@ class DateSearchExportWindow:
         self.window.transient(self.parent)
         self.window.grab_set()
         
-        # Header
-        header_frame = ttk.Frame(self.window, style='Modern.TFrame')
-        header_frame.pack(fill=tk.X, padx=15, pady=15)
+        # Configure grid weights for responsiveness
+        self.window.columnconfigure(0, weight=1)
+        self.window.rowconfigure(1, weight=1)
         
-        title_label = ttk.Label(header_frame, text="Search and Export Logs by Date Range", 
+        # Header with search range information
+        header_frame = ttk.Frame(self.window, style='Modern.TFrame')
+        header_frame.grid(row=0, column=0, sticky='ew', padx=20, pady=20)
+        header_frame.columnconfigure(0, weight=1)
+        
+        # Title with search range
+        title_text = f"Temperature History: {self.start_datetime.strftime('%Y-%m-%d %H:%M')} to {self.end_datetime.strftime('%Y-%m-%d %H:%M')}"
+        title_label = ttk.Label(header_frame, text=title_text,
                                background=bg_color,
                                foreground=self.colors['text_primary'],
                                font=("Segoe UI", 16, "bold"))
-        title_label.pack(side=tk.LEFT)
+        title_label.grid(row=0, column=0, sticky='w')
+        
+        # Statistics frame
+        stats_frame = ttk.Frame(header_frame, style='Modern.TFrame')
+        stats_frame.grid(row=1, column=0, sticky='ew', pady=(10, 0))
+        stats_frame.columnconfigure(0, weight=1)
+        stats_frame.columnconfigure(1, weight=1)
+        stats_frame.columnconfigure(2, weight=1)
+        
+        # Parse temperature data for statistics
+        temperatures = self.parse_temperature_data()
+        
+        if temperatures:
+            avg_temp = sum(temperatures) / len(temperatures)
+            max_temp = max(temperatures)
+            min_temp = min(temperatures)
+            
+            # Average temperature
+            avg_frame = ttk.Frame(stats_frame, style='Card.TFrame', padding="10")
+            avg_frame.grid(row=0, column=0, sticky='ew', padx=(0, 10))
+            
+            ttk.Label(avg_frame, text="Average Temp", 
+                     background=self.colors['card_bg'],
+                     foreground=self.colors['text_secondary'],
+                     font=("Segoe UI", 9)).pack(anchor=tk.CENTER)
+            ttk.Label(avg_frame, text=f"{avg_temp:.1f}°C", 
+                     background=self.colors['card_bg'],
+                     foreground=self.colors['primary'],
+                     font=("Segoe UI", 14, "bold")).pack(anchor=tk.CENTER)
+            
+            # Max temperature
+            max_frame = ttk.Frame(stats_frame, style='Card.TFrame', padding="10")
+            max_frame.grid(row=0, column=1, sticky='ew', padx=5)
+            
+            ttk.Label(max_frame, text="Max Temp", 
+                     background=self.colors['card_bg'],
+                     foreground=self.colors['text_secondary'],
+                     font=("Segoe UI", 9)).pack(anchor=tk.CENTER)
+            ttk.Label(max_frame, text=f"{max_temp:.1f}°C", 
+                     background=self.colors['card_bg'],
+                     foreground=self.colors['error'],
+                     font=("Segoe UI", 14, "bold")).pack(anchor=tk.CENTER)
+            
+            # Min temperature
+            min_frame = ttk.Frame(stats_frame, style='Card.TFrame', padding="10")
+            min_frame.grid(row=0, column=2, sticky='ew', padx=(10, 0))
+            
+            ttk.Label(min_frame, text="Min Temp", 
+                     background=self.colors['card_bg'],
+                     foreground=self.colors['text_secondary'],
+                     font=("Segoe UI", 9)).pack(anchor=tk.CENTER)
+            ttk.Label(min_frame, text=f"{min_temp:.1f}°C", 
+                     background=self.colors['card_bg'],
+                     foreground=self.colors['success'],
+                     font=("Segoe UI", 14, "bold")).pack(anchor=tk.CENTER)
+        
+        # Main content area - Graph
+        content_frame = ttk.Frame(self.window, style='Modern.TFrame')
+        content_frame.grid(row=1, column=0, sticky='nsew', padx=20, pady=(0, 20))
+        content_frame.columnconfigure(0, weight=1)
+        content_frame.rowconfigure(0, weight=1)
+        
+        # Create matplotlib figure for graph
+        self.setup_graph(content_frame)
+        
+        # Close button
+        button_frame = ttk.Frame(self.window, style='Modern.TFrame')
+        button_frame.grid(row=2, column=0, sticky='ew', padx=20, pady=(0, 20))
+        
+        close_button = ttk.Button(button_frame, text="Close", 
+                                 command=self.window.destroy,
+                                 style='Primary.TButton')
+        close_button.pack(side=tk.RIGHT)
+        
+        # Handle window close
+        self.window.protocol("WM_DELETE_WINDOW", self.window.destroy)
+    
+    def parse_temperature_data(self):
+        """Parse temperature data from logs"""
+        temperatures = []
+        
+        for log_entry in self.logs:
+            if '°C' in log_entry:
+                try:
+                    # Extract temperature value
+                    temp_part = log_entry.split('°C')[0]
+                    if ':' in temp_part:
+                        temp_str = temp_part.split(':')[-1].strip()
+                        try:
+                            temperature = float(temp_str)
+                            temperatures.append(temperature)
+                        except ValueError:
+                            continue
+                except Exception:
+                    continue
+        
+        return temperatures
+    
+    def setup_graph(self, parent):
+        """Setup the matplotlib graph for temperature visualization"""
+        # Parse temperature data from logs
+        timestamps = []
+        temperatures = []
+        
+        for log_entry in self.logs:
+            if '°C' in log_entry:
+                try:
+                    # Extract timestamp
+                    timestamp_str = log_entry.split(']')[0][1:]
+                    timestamp = datetime.datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+                    
+                    # Extract temperature value
+                    temp_part = log_entry.split('°C')[0]
+                    if ':' in temp_part:
+                        temp_str = temp_part.split(':')[-1].strip()
+                        try:
+                            temperature = float(temp_str)
+                            timestamps.append(timestamp)
+                            temperatures.append(temperature)
+                        except ValueError:
+                            continue
+                except Exception:
+                    continue
+        
+        if not temperatures:
+            # Show no data message
+            no_data_frame = ttk.Frame(parent, style='Modern.TFrame')
+            no_data_frame.grid(row=0, column=0, sticky='nsew')
+            no_data_frame.columnconfigure(0, weight=1)
+            no_data_frame.rowconfigure(0, weight=1)
+            
+            no_data_label = ttk.Label(no_data_frame, text="No temperature data found in the selected time range",
+                                     background=self.colors['surface'],
+                                     foreground=self.colors['text_secondary'],
+                                     font=("Segoe UI", 14))
+            no_data_label.grid(row=0, column=0, sticky='')
+            return
+        
+        # Create figure and plot
+        self.fig, self.ax = plt.subplots(figsize=(12, 8))
+        self.fig.patch.set_facecolor(self.colors['card_bg'])
+        self.ax.set_facecolor(self.colors['card_bg'])
+        
+        # Set colors based on theme
+        if self.colors['background'] == '#0f172a':  # Dark theme
+            text_color = 'white'
+            grid_color = '#2d3748'
+        else:  # Light theme
+            text_color = 'black'
+            grid_color = '#e2e8f0'
+        
+        # CONDITION 3 FIXED: Create colored line segments based on temperature thresholds
+        critical_temp = 30
+        warning_temp = 27
+        
+        if len(timestamps) > 1:
+            # Create segments for different temperature ranges
+            segments = []
+            current_segment = {'timestamps': [timestamps[0]], 'temps': [temperatures[0]], 'color': self.get_temperature_color(temperatures[0], critical_temp, warning_temp)}
+            
+            for i in range(1, len(timestamps)):
+                current_color = self.get_temperature_color(temperatures[i], critical_temp, warning_temp)
+                
+                if current_color == current_segment['color']:
+                    # Continue current segment
+                    current_segment['timestamps'].append(timestamps[i])
+                    current_segment['temps'].append(temperatures[i])
+                else:
+                    # End current segment and start new one
+                    segments.append(current_segment)
+                    current_segment = {'timestamps': [timestamps[i]], 'temps': [temperatures[i]], 'color': current_color}
+            
+            segments.append(current_segment)
+            
+            # Plot each segment with its respective color
+            for segment in segments:
+                if len(segment['timestamps']) > 1:
+                    self.ax.plot(segment['timestamps'], segment['temps'], 
+                                color=segment['color'], 
+                                linewidth=3, 
+                                marker='o', 
+                                markersize=4,
+                                alpha=0.8)
+        
+        # Customize graph
+        self.ax.tick_params(colors=text_color)
+        self.ax.xaxis.label.set_color(text_color)
+        self.ax.yaxis.label.set_color(text_color)
+        self.ax.title.set_color(text_color)
+        
+        self.ax.set_xlabel('Time', fontsize=12, fontweight='bold')
+        self.ax.set_ylabel('Temperature (°C)', fontsize=12, fontweight='bold')
+        
+        # Add legend for temperature ranges
+        from matplotlib.lines import Line2D
+        legend_elements = [
+            Line2D([0], [0], color='blue', lw=3, label='Normal Temperature (<27°C)'),
+            Line2D([0], [0], color='yellow', lw=3, label='Warning (27-30°C)'),
+            Line2D([0], [0], color='red', lw=3, label='Critical (>30°C)')
+        ]
+        self.ax.legend(handles=legend_elements, fontsize=11, framealpha=0.9)
+        
+        self.ax.grid(True, color=grid_color, alpha=0.3)
+        
+        # Rotate x-axis labels for better readability
+        plt.setp(self.ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+        
+        # Add some statistics to the graph
+        avg_temp = sum(temperatures) / len(temperatures)
+        max_temp = max(temperatures)
+        min_temp = min(temperatures)
+        
+        # Add horizontal line for average
+        self.ax.axhline(y=avg_temp, color=self.colors['accent'], linestyle='--', 
+                       alpha=0.7, label=f'Average: {avg_temp:.1f}°C')
+        
+        # Adjust layout
+        self.fig.tight_layout()
+        
+        # Create canvas
+        self.canvas = FigureCanvasTkAgg(self.fig, master=parent)
+        self.canvas.get_tk_widget().grid(row=0, column=0, sticky='nsew')
+    
+    def get_temperature_color(self, temperature, critical_temp, warning_temp):
+        """Get color based on temperature value"""
+        if temperature >= critical_temp:
+            return 'red'  # Critical
+        elif temperature >= warning_temp:
+            return 'yellow'  # Warning
+        else:
+            return 'blue'  # Normal
+
+class TimeRangeSearchWindow:
+    """Modal window for time range search and export with graph generation"""
+    def __init__(self, parent, log_manager, theme_manager):
+        self.parent = parent
+        self.log_manager = log_manager
+        self.theme_manager = theme_manager
+        self.colors = self.theme_manager.get_theme()
+        self.window = None
+        self.current_logs = []
+        self.create_window()
+        
+    def create_window(self):
+        """Create the time search and export modal window"""
+        self.window = tk.Toplevel(self.parent)
+        self.window.title("Search and Export Logs by Time Range")
+        
+        # CONDITION 2 FIXED: Responsive window sizing
+        screen_width = self.window.winfo_screenwidth()
+        screen_height = self.window.winfo_screenheight()
+        window_width = min(1100, screen_width - 100)
+        window_height = min(700, screen_height - 100)
+        self.window.geometry(f"{window_width}x{window_height}")
+        
+        # Make window responsive
+        self.window.minsize(900, 600)
+        
+        # Center the window on screen
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        self.window.geometry(f"+{x}+{y}")
+        
+        # Set proper background color
+        if self.colors['background'] == '#0f172a':  # Dark mode
+            bg_color = '#1e293b'
+            text_bg = '#1e293b'
+        else:  # Light mode
+            bg_color = '#ffffff'
+            text_bg = '#ffffff'
+            
+        self.window.configure(bg=bg_color)
+        
+        # Make the window modal
+        self.window.transient(self.parent)
+        self.window.grab_set()
+        
+        # Configure grid weights for responsiveness
+        self.window.columnconfigure(0, weight=1)
+        self.window.rowconfigure(1, weight=1)
+        
+        # Header
+        header_frame = ttk.Frame(self.window, style='Modern.TFrame')
+        header_frame.grid(row=0, column=0, sticky='ew', padx=15, pady=15)
+        header_frame.columnconfigure(1, weight=1)
+        
+        title_label = ttk.Label(header_frame, text="Search and Export Logs by Time Range", 
+                               background=bg_color,
+                               foreground=self.colors['text_primary'],
+                               font=("Segoe UI", 16, "bold"))
+        title_label.grid(row=0, column=0, sticky='w')
         
         # Search and Export controls frame
         controls_frame = ttk.Frame(self.window, style='Modern.TFrame')
-        controls_frame.pack(fill=tk.X, padx=15, pady=(0, 10))
+        controls_frame.grid(row=1, column=0, sticky='ew', padx=15, pady=(0, 10))
+        controls_frame.columnconfigure(1, weight=1)
         
-        # Date range selection
-        date_frame = ttk.Frame(controls_frame, style='Modern.TFrame')
-        date_frame.pack(fill=tk.X, pady=(0, 10))
+        # Date and time range selection
+        datetime_frame = ttk.Frame(controls_frame, style='Modern.TFrame')
+        datetime_frame.grid(row=0, column=0, sticky='ew', pady=(0, 10))
+        datetime_frame.columnconfigure(1, weight=1)
+        datetime_frame.columnconfigure(3, weight=1)
         
-        # Start date
-        start_frame = ttk.Frame(date_frame, style='Modern.TFrame')
-        start_frame.pack(side=tk.LEFT, padx=(0, 20))
+        # Start date and time
+        start_frame = ttk.Frame(datetime_frame, style='Modern.TFrame')
+        start_frame.grid(row=0, column=0, sticky='w', padx=(0, 20))
         
-        ttk.Label(start_frame, text="Start Date (YYYY-MM-DD):", 
+        ttk.Label(start_frame, text="Start Date & Time:", 
                  background=bg_color,
                  foreground=self.colors['text_secondary'],
-                 font=('Segoe UI', 9)).pack(anchor=tk.W)
+                 font=('Segoe UI', 9, 'bold')).grid(row=0, column=0, sticky='w', columnspan=2)
+        
+        # Date entry
+        ttk.Label(start_frame, text="Date (YYYY-MM-DD):", 
+                 background=bg_color,
+                 foreground=self.colors['text_secondary'],
+                 font=('Segoe UI', 8)).grid(row=1, column=0, sticky='w', pady=(5, 2))
         
         self.start_date_var = tk.StringVar(value=datetime.datetime.now().strftime("%Y-%m-%d"))
-        start_date_entry = ttk.Entry(start_frame, textvariable=self.start_date_var, width=12)
-        start_date_entry.pack(anchor=tk.W, pady=(5, 0))
+        start_date_entry = ttk.Entry(start_frame, textvariable=self.start_date_var, width=12, font=('Segoe UI', 8))
+        start_date_entry.grid(row=2, column=0, sticky='w', pady=(0, 5))
         
-        # End date
-        end_frame = ttk.Frame(date_frame, style='Modern.TFrame')
-        end_frame.pack(side=tk.LEFT, padx=(0, 20))
-        
-        ttk.Label(end_frame, text="End Date (YYYY-MM-DD):", 
+        # Time entry
+        ttk.Label(start_frame, text="Time (HH:MM):", 
                  background=bg_color,
                  foreground=self.colors['text_secondary'],
-                 font=('Segoe UI', 9)).pack(anchor=tk.W)
+                 font=('Segoe UI', 8)).grid(row=1, column=1, sticky='w', padx=(10, 0), pady=(5, 2))
+        
+        self.start_time_var = tk.StringVar(value="00:00")
+        start_time_entry = ttk.Entry(start_frame, textvariable=self.start_time_var, width=8, font=('Segoe UI', 8))
+        start_time_entry.grid(row=2, column=1, sticky='w', padx=(10, 0), pady=(0, 5))
+        
+        # End date and time
+        end_frame = ttk.Frame(datetime_frame, style='Modern.TFrame')
+        end_frame.grid(row=0, column=1, sticky='w', padx=(0, 20))
+        
+        ttk.Label(end_frame, text="End Date & Time:", 
+                 background=bg_color,
+                 foreground=self.colors['text_secondary'],
+                 font=('Segoe UI', 9, 'bold')).grid(row=0, column=0, sticky='w', columnspan=2)
+        
+        # Date entry
+        ttk.Label(end_frame, text="Date (YYYY-MM-DD):", 
+                 background=bg_color,
+                 foreground=self.colors['text_secondary'],
+                 font=('Segoe UI', 8)).grid(row=1, column=0, sticky='w', pady=(5, 2))
         
         self.end_date_var = tk.StringVar(value=datetime.datetime.now().strftime("%Y-%m-%d"))
-        end_date_entry = ttk.Entry(end_frame, textvariable=self.end_date_var, width=12)
-        end_date_entry.pack(anchor=tk.W, pady=(5, 0))
+        end_date_entry = ttk.Entry(end_frame, textvariable=self.end_date_var, width=12, font=('Segoe UI', 8))
+        end_date_entry.grid(row=2, column=0, sticky='w', pady=(0, 5))
+        
+        # Time entry
+        ttk.Label(end_frame, text="Time (HH:MM):", 
+                 background=bg_color,
+                 foreground=self.colors['text_secondary'],
+                 font=('Segoe UI', 8)).grid(row=1, column=1, sticky='w', padx=(10, 0), pady=(5, 2))
+        
+        self.end_time_var = tk.StringVar(value="23:59")
+        end_time_entry = ttk.Entry(end_frame, textvariable=self.end_time_var, width=8, font=('Segoe UI', 8))
+        end_time_entry.grid(row=2, column=1, sticky='w', padx=(10, 0), pady=(0, 5))
+        
+        # Quick time range buttons
+        quick_buttons_frame = ttk.Frame(datetime_frame, style='Modern.TFrame')
+        quick_buttons_frame.grid(row=0, column=2, sticky='w')
+        
+        ttk.Label(quick_buttons_frame, text="Quick Ranges:", 
+                 background=bg_color,
+                 foreground=self.colors['text_secondary'],
+                 font=('Segoe UI', 9, 'bold')).grid(row=0, column=0, sticky='w', columnspan=2)
+        
+        # Quick range buttons
+        button_frame = ttk.Frame(quick_buttons_frame, style='Modern.TFrame')
+        button_frame.grid(row=1, column=0, sticky='w', pady=(5, 0))
+        
+        ttk.Button(button_frame, text="Last Hour", 
+                  command=lambda: self.set_quick_range(1),
+                  style='Secondary.TButton', width=10).grid(row=0, column=0, padx=(0, 5))
+        
+        ttk.Button(button_frame, text="Last 6 Hours", 
+                  command=lambda: self.set_quick_range(6),
+                  style='Secondary.TButton', width=10).grid(row=0, column=1, padx=(0, 5))
+        
+        ttk.Button(button_frame, text="Last 24 Hours", 
+                  command=lambda: self.set_quick_range(24),
+                  style='Secondary.TButton', width=10).grid(row=0, column=2, padx=(0, 5))
+        
+        ttk.Button(button_frame, text="Today", 
+                  command=self.set_today_range,
+                  style='Secondary.TButton', width=10).grid(row=1, column=0, padx=(0, 5), pady=(5, 0))
+        
+        ttk.Button(button_frame, text="Yesterday", 
+                  command=self.set_yesterday_range,
+                  style='Secondary.TButton', width=10).grid(row=1, column=1, padx=(0, 5), pady=(5, 0))
+        
+        ttk.Button(button_frame, text="Last 7 Days", 
+                  command=lambda: self.set_quick_range(7*24),
+                  style='Secondary.TButton', width=10).grid(row=1, column=2, padx=(0, 5), pady=(5, 0))
         
         # Buttons frame
-        button_frame = ttk.Frame(date_frame, style='Modern.TFrame')
-        button_frame.pack(side=tk.LEFT, padx=(20, 0))
+        action_frame = ttk.Frame(controls_frame, style='Modern.TFrame')
+        action_frame.grid(row=1, column=0, sticky='ew')
+        action_frame.columnconfigure(0, weight=1)
         
         # Search button
-        search_button = ttk.Button(button_frame, text="Search Logs", 
+        search_button = ttk.Button(action_frame, text="Search Logs", 
                                   command=self.search_logs,
                                   style='Primary.TButton')
-        search_button.pack(side=tk.LEFT, padx=(0, 10))
+        search_button.grid(row=0, column=0, sticky='w', padx=(0, 10))
         
         # Export button
-        self.export_button = ttk.Button(button_frame, text="Export Results", 
+        self.export_button = ttk.Button(action_frame, text="Export Results", 
                                        command=self.export_logs,
                                        style='Secondary.TButton',
                                        state="disabled")
-        self.export_button.pack(side=tk.LEFT)
+        self.export_button.grid(row=0, column=1, sticky='w', padx=(0, 10))
+        
+        # Show History Graph button
+        self.graph_button = ttk.Button(action_frame, text="Show History Graph", 
+                                      command=self.show_history_graph,
+                                      style='Secondary.TButton',
+                                      state="disabled")
+        self.graph_button.grid(row=0, column=2, sticky='w')
         
         # Results info frame
         info_frame = ttk.Frame(controls_frame, style='Modern.TFrame')
-        info_frame.pack(fill=tk.X)
+        info_frame.grid(row=2, column=0, sticky='ew', pady=(10, 0))
         
-        self.results_var = tk.StringVar(value="Enter date range and click 'Search Logs'")
+        self.results_var = tk.StringVar(value="Enter time range and click 'Search Logs'")
         results_label = ttk.Label(info_frame, textvariable=self.results_var,
                                 background=bg_color,
                                 foreground=self.colors['text_secondary'],
                                 font=("Segoe UI", 9))
-        results_label.pack(anchor=tk.W)
+        results_label.pack(anchor='w')
         
-        # Log display area
-        log_frame = ttk.Frame(self.window, style='Modern.TFrame')
-        log_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 15))
+        # Main content area - Logs
+        content_frame = ttk.Frame(self.window, style='Modern.TFrame')
+        content_frame.grid(row=2, column=0, sticky='nsew', padx=15, pady=(0, 15))
+        content_frame.columnconfigure(0, weight=1)
+        content_frame.rowconfigure(0, weight=1)
         
-        # Create scrollable text area for logs - SET TO READ-ONLY
+        # Create scrollable text area for logs
         self.log_text = scrolledtext.ScrolledText(
-            log_frame,
+            content_frame,
             wrap=tk.WORD,
             width=100,
             height=25,
@@ -564,36 +957,62 @@ class DateSearchExportWindow:
             fg=self.colors['text_primary'],
             font=("Consolas", 9),
             insertbackground=self.colors['text_primary'],
-            state='disabled'  # FIXED: Set to read-only
+            state='disabled'
         )
-        self.log_text.pack(fill=tk.BOTH, expand=True)
+        self.log_text.grid(row=0, column=0, sticky='nsew')
         
         # Handle window close
         self.window.protocol("WM_DELETE_WINDOW", self.on_close)
     
+    def set_quick_range(self, hours):
+        """Set time range for last N hours"""
+        end_time = datetime.datetime.now()
+        start_time = end_time - datetime.timedelta(hours=hours)
+        
+        self.start_date_var.set(start_time.strftime("%Y-%m-%d"))
+        self.start_time_var.set(start_time.strftime("%H:%M"))
+        self.end_date_var.set(end_time.strftime("%Y-%m-%d"))
+        self.end_time_var.set(end_time.strftime("%H:%M"))
+    
+    def set_today_range(self):
+        """Set time range for today"""
+        today = datetime.datetime.now()
+        self.start_date_var.set(today.strftime("%Y-%m-%d"))
+        self.start_time_var.set("00:00")
+        self.end_date_var.set(today.strftime("%Y-%m-%d"))
+        self.end_time_var.set("23:59")
+    
+    def set_yesterday_range(self):
+        """Set time range for yesterday"""
+        yesterday = datetime.datetime.now() - datetime.timedelta(days=1)
+        self.start_date_var.set(yesterday.strftime("%Y-%m-%d"))
+        self.start_time_var.set("00:00")
+        self.end_date_var.set(yesterday.strftime("%Y-%m-%d"))
+        self.end_time_var.set("23:59")
+    
     def search_logs(self):
-        """Search logs for the selected date range"""
+        """Search logs for the selected time range"""
         try:
-            start_date_str = self.start_date_var.get()
-            end_date_str = self.end_date_var.get()
+            start_datetime_str = f"{self.start_date_var.get()} {self.start_time_var.get()}"
+            end_datetime_str = f"{self.end_date_var.get()} {self.end_time_var.get()}"
             
-            # Validate dates
+            # Validate datetime
             try:
-                start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
-                end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d").date()
+                start_datetime = datetime.datetime.strptime(start_datetime_str, "%Y-%m-%d %H:%M")
+                end_datetime = datetime.datetime.strptime(end_datetime_str, "%Y-%m-%d %H:%M")
                 
-                if start_date > end_date:
-                    messagebox.showerror("Error", "Start date cannot be after end date")
+                if start_datetime > end_datetime:
+                    messagebox.showerror("Error", "Start time cannot be after end time")
                     return
                     
             except ValueError:
-                messagebox.showerror("Error", "Invalid date format. Please use YYYY-MM-DD")
+                messagebox.showerror("Error", "Invalid datetime format. Please use YYYY-MM-DD for date and HH:MM for time")
                 return
             
-            # Get logs for the date range
-            self.current_logs = self.log_manager.get_logs_for_date_range(start_date, end_date)
+            # Get logs for the time range
+            self.current_logs = self.log_manager.get_logs_for_time_range(start_datetime, end_datetime)
             
-            # Clear and update log display - FIXED: Enable text widget for update
+            # Clear and update log display
             self.log_text.config(state='normal')
             self.log_text.delete(1.0, tk.END)
             
@@ -606,24 +1025,47 @@ class DateSearchExportWindow:
                 
                 # Update results info
                 log_count = len(self.current_logs)
-                if start_date_str == end_date_str:
-                    self.results_var.set(f"Found {log_count} log entries for {start_date_str}")
-                else:
-                    self.results_var.set(f"Found {log_count} log entries from {start_date_str} to {end_date_str}")
+                self.results_var.set(f"Found {log_count} log entries from {start_datetime_str} to {end_datetime_str}")
                 
-                # Enable export button
+                # Enable export and graph buttons
                 self.export_button.config(state="normal")
+                self.graph_button.config(state="normal")
                 
             else:
-                self.log_text.insert(tk.END, "No logs found for the specified date range.\n")
-                self.results_var.set("No logs found for the specified date range")
+                self.log_text.insert(tk.END, "No logs found for the specified time range.\n")
+                self.results_var.set("No logs found for the specified time range")
                 self.export_button.config(state="disabled")
+                self.graph_button.config(state="disabled")
             
-            # FIXED: Set back to read-only after updating content
+            # Set back to read-only after updating content
             self.log_text.config(state='disabled')
             
         except Exception as e:
             messagebox.showerror("Search Error", f"Failed to search logs: {str(e)}")
+    
+    def show_history_graph(self):
+        """Show the history graph in a modal window"""
+        if not self.current_logs:
+            messagebox.showinfo("No Data", "No logs to generate graph. Please search for logs first.")
+            return
+        
+        try:
+            start_datetime_str = f"{self.start_date_var.get()} {self.start_time_var.get()}"
+            end_datetime_str = f"{self.end_date_var.get()} {self.end_time_var.get()}"
+            
+            # Validate datetime
+            try:
+                start_datetime = datetime.datetime.strptime(start_datetime_str, "%Y-%m-%d %H:%M")
+                end_datetime = datetime.datetime.strptime(end_datetime_str, "%Y-%m-%d %H:%M")
+            except ValueError:
+                messagebox.showerror("Error", "Invalid datetime format in fields")
+                return
+            
+            # Create and show the search result modal
+            SearchResultModal(self.window, start_datetime, end_datetime, self.current_logs, self.theme_manager)
+            
+        except Exception as e:
+            messagebox.showerror("Graph Error", f"Failed to generate graph: {str(e)}")
     
     def export_logs(self):
         """Export the currently displayed logs to file"""
@@ -632,19 +1074,19 @@ class DateSearchExportWindow:
             return
         
         try:
-            start_date_str = self.start_date_var.get()
-            end_date_str = self.end_date_var.get()
+            start_datetime_str = f"{self.start_date_var.get()} {self.start_time_var.get()}"
+            end_datetime_str = f"{self.end_date_var.get()} {self.end_time_var.get()}"
             
-            # Validate dates
+            # Validate datetime
             try:
-                start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
-                end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d").date()
+                start_datetime = datetime.datetime.strptime(start_datetime_str, "%Y-%m-%d %H:%M")
+                end_datetime = datetime.datetime.strptime(end_datetime_str, "%Y-%m-%d %H:%M")
             except ValueError:
-                messagebox.showerror("Error", "Invalid date format in date fields")
+                messagebox.showerror("Error", "Invalid datetime format in fields")
                 return
             
             # Export logs using LogManager
-            success = self.log_manager.export_logs_to_file(start_date, end_date)
+            success = self.log_manager.export_logs_to_file_with_time_range(start_datetime, end_datetime)
             
             if success:
                 messagebox.showinfo("Export Successful", 
@@ -674,8 +1116,23 @@ class LiveLogWindow:
         """Create the Live Log window"""
         self.window = tk.Toplevel(self.parent)
         self.window.title("Live Temperature Log")
-        self.window.geometry("1000x700")
-        # FIXED CONDITION 4: Set proper background color for window and all frames
+        
+        # CONDITION 2 FIXED: Responsive window sizing
+        screen_width = self.window.winfo_screenwidth()
+        screen_height = self.window.winfo_screenheight()
+        window_width = min(1000, screen_width - 100)
+        window_height = min(700, screen_height - 100)
+        self.window.geometry(f"{window_width}x{window_height}")
+        
+        # Make window responsive with minimum size
+        self.window.minsize(800, 600)
+        
+        # Center the window on screen
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        self.window.geometry(f"+{x}+{y}")
+        
+        # Set proper background color
         if self.colors['background'] == '#0f172a':  # Dark mode
             bg_color = '#1e293b'
             text_bg = '#1e293b'
@@ -685,27 +1142,32 @@ class LiveLogWindow:
             
         self.window.configure(bg=bg_color)
         
+        # Configure grid for responsiveness
+        self.window.columnconfigure(0, weight=1)
+        self.window.rowconfigure(1, weight=1)
+        
         # Make the window modal
         self.window.transient(self.parent)
         self.window.grab_set()
         
         # Header
         header_frame = ttk.Frame(self.window, style='Modern.TFrame')
-        header_frame.pack(fill=tk.X, padx=15, pady=15)
+        header_frame.grid(row=0, column=0, sticky='ew', padx=15, pady=15)
+        header_frame.columnconfigure(0, weight=1)
         
         title_label = ttk.Label(header_frame, text="Live Temperature Log", 
                                background=bg_color,
                                foreground=self.colors['text_primary'],
                                font=("Segoe UI", 16, "bold"))
-        title_label.pack(side=tk.LEFT)
+        title_label.grid(row=0, column=0, sticky='w')
         
         # Buttons frame
         button_frame = ttk.Frame(header_frame, style='Modern.TFrame')
-        button_frame.pack(side=tk.RIGHT)
+        button_frame.grid(row=0, column=1, sticky='e')
         
-        # Search and Export button
-        search_export_button = ttk.Button(button_frame, text="Search & Export by Date", 
-                                         command=self.show_search_export_modal,
+        # Updated button text to reflect time range functionality
+        search_export_button = ttk.Button(button_frame, text="Search & Export by Time Range", 
+                                         command=self.show_time_search_modal,
                                          style='Secondary.TButton')
         search_export_button.pack(side=tk.RIGHT, padx=(10, 0))
         
@@ -715,13 +1177,15 @@ class LiveLogWindow:
                                 background=bg_color,
                                 foreground=self.colors['text_secondary'],
                                 font=("Segoe UI", 9))
-        status_label.pack(side=tk.LEFT, padx=(20, 0))
+        status_label.grid(row=1, column=0, sticky='w', pady=(5, 0))
         
         # Log display area
         log_frame = ttk.Frame(self.window, style='Modern.TFrame')
-        log_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 15))
+        log_frame.grid(row=1, column=0, sticky='nsew', padx=15, pady=(0, 15))
+        log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(0, weight=1)
         
-        # Create scrollable text area for logs - SET TO READ-ONLY
+        # Create scrollable text area for logs
         self.log_text = scrolledtext.ScrolledText(
             log_frame,
             wrap=tk.WORD,
@@ -731,9 +1195,9 @@ class LiveLogWindow:
             fg=self.colors['text_primary'],
             font=("Consolas", 9),
             insertbackground=self.colors['text_primary'],
-            state='disabled'  # FIXED: Set to read-only
+            state='disabled'
         )
-        self.log_text.pack(fill=tk.BOTH, expand=True)
+        self.log_text.grid(row=0, column=0, sticky='nsew')
         
         # Load existing logs
         self.refresh_log_display()
@@ -744,15 +1208,15 @@ class LiveLogWindow:
         # Handle window close
         self.window.protocol("WM_DELETE_WINDOW", self.on_close)
     
-    def show_search_export_modal(self):
-        """Show the date search and export modal window"""
-        DateSearchExportWindow(self.window, self.log_manager, self.theme_manager)
+    def show_time_search_modal(self):
+        """Show the time range search and export modal window"""
+        TimeRangeSearchWindow(self.window, self.log_manager, self.theme_manager)
     
     def refresh_log_display(self):
         """Refresh the log display with current logs"""
         logs = self.log_manager.get_all_logs()
         
-        # FIXED: Enable text widget for update
+        # Enable text widget for update
         self.log_text.config(state='normal')
         self.log_text.delete(1.0, tk.END)
         
@@ -765,7 +1229,7 @@ class LiveLogWindow:
         else:
             self.log_text.insert(tk.END, "No logs available yet...\n")
         
-        # FIXED: Set back to read-only after updating content
+        # Set back to read-only after updating content
         self.log_text.config(state='disabled')
     
     def update_live_log(self):
@@ -775,7 +1239,7 @@ class LiveLogWindow:
             new_logs = self.log_manager.get_new_logs()
             
             if new_logs:
-                # FIXED: Enable text widget for update
+                # Enable text widget for update
                 self.log_text.config(state='normal')
                 
                 for log_entry in new_logs:
@@ -784,7 +1248,7 @@ class LiveLogWindow:
                 # Auto-scroll to bottom
                 self.log_text.see(tk.END)
                 
-                # FIXED: Set back to read-only after updating content
+                # Set back to read-only after updating content
                 self.log_text.config(state='disabled')
             
             # Schedule next update
@@ -849,7 +1313,7 @@ class LogManager:
             if current_file != self.current_log_file:
                 self.current_log_file = current_file
             
-            # FIXED: Use UTF-8 encoding with error handling
+            # Use UTF-8 encoding with error handling
             with open(self.current_log_file, 'a', encoding='utf-8', errors='replace') as f:
                 f.write(log_entry + "\n")
         except Exception as e:
@@ -959,6 +1423,55 @@ class LogManager:
             print(f"❌ Error reading logs for date range: {e}")
         
         return logs
+
+    def get_logs_for_time_range(self, start_datetime, end_datetime):
+        """Get logs for a specific time range"""
+        logs = []
+        
+        try:
+            # Check if directory exists
+            if not os.path.exists(self.daily_logs_dir):
+                print(f"❌ Daily logs directory '{self.daily_logs_dir}' not found")
+                return logs
+            
+            # Generate all dates in the range
+            current_date = start_datetime.date()
+            end_date = end_datetime.date()
+            
+            while current_date <= end_date:
+                log_file = os.path.join(self.daily_logs_dir, f"temperature_logs_{current_date.strftime('%Y-%m-%d')}.logs")
+                
+                if os.path.exists(log_file):
+                    file_logs = self._read_log_file_with_encoding(log_file)
+                    if file_logs:
+                        # Filter logs by time range
+                        for log_entry in file_logs:
+                            try:
+                                # Extract timestamp from log entry
+                                timestamp_str = log_entry.split(']')[0][1:]
+                                log_datetime = datetime.datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+                                
+                                # Check if log datetime is within the specified range
+                                if start_datetime <= log_datetime <= end_datetime:
+                                    logs.append(log_entry)
+                            except ValueError:
+                                # Skip entries with invalid timestamps
+                                continue
+                        
+                        print(f"📖 Filtered entries from {os.path.basename(log_file)}")
+                    else:
+                        print(f"⚠️ No readable content in: {os.path.basename(log_file)}")
+                else:
+                    print(f"ℹ️ No log file for date: {current_date}")
+                
+                current_date += datetime.timedelta(days=1)
+                
+            print(f"📊 Found {len(logs)} total log entries for time range {start_datetime} to {end_datetime}")
+                
+        except Exception as e:
+            print(f"❌ Error reading logs for time range: {e}")
+        
+        return logs
     
     def export_logs_to_file(self, start_date, end_date):
         """Export logs to .logs file in Downloads folder only"""
@@ -982,10 +1495,50 @@ class LogManager:
             # Export only to Downloads folder
             downloads_path = os.path.join(os.path.expanduser("~"), "Downloads", export_filename)
             
-            # FIXED: Use UTF-8 encoding for export
+            # Use UTF-8 encoding for export
             with open(downloads_path, 'w', encoding='utf-8') as f:
                 f.write("# Temperature Logs Export\n")
                 f.write(f"# Date Range: {start_str} to {end_str}\n")
+                f.write(f"# Exported on: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write("# Format: [TIMESTAMP] LOG_ENTRY\n")
+                f.write("# Source: Storage Temperature Monitor\n")
+                f.write("=" * 60 + "\n")
+                for log_entry in logs:
+                    f.write(log_entry + "\n")
+            
+            print(f"✅ Daily logs stored in: {self.daily_logs_dir}/")
+            print(f"✅ Export file created: {downloads_path}")
+            print(f"✅ Exported {len(logs)} log entries")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error exporting logs: {e}")
+            messagebox.showerror("Export Error", f"Failed to export logs: {str(e)}")
+            return False
+
+    def export_logs_to_file_with_time_range(self, start_datetime, end_datetime):
+        """Export logs with time range to .logs file in Downloads folder"""
+        logs = self.get_logs_for_time_range(start_datetime, end_datetime)
+        
+        if not logs:
+            print("❌ No logs to export")
+            messagebox.showinfo("No Data", "No logs found to export for the specified time range.")
+            return False
+        
+        try:
+            # Create filename with time range for EXPORT file
+            start_str = start_datetime.strftime("%Y-%m-%d_%H-%M")
+            end_str = end_datetime.strftime("%Y-%m-%d_%H-%M")
+            
+            export_filename = f"temperature_export_{start_str}_to_{end_str}.logs"
+            
+            # Export only to Downloads folder
+            downloads_path = os.path.join(os.path.expanduser("~"), "Downloads", export_filename)
+            
+            # Use UTF-8 encoding for export
+            with open(downloads_path, 'w', encoding='utf-8') as f:
+                f.write("# Temperature Logs Export\n")
+                f.write(f"# Time Range: {start_datetime.strftime('%Y-%m-%d %H:%M')} to {end_datetime.strftime('%Y-%m-%d %H:%M')}\n")
                 f.write(f"# Exported on: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write("# Format: [TIMESTAMP] LOG_ENTRY\n")
                 f.write("# Source: Storage Temperature Monitor\n")
@@ -1008,13 +1561,24 @@ class TemperatureMonitor:
         self.root = root
         self.root.title("Storage Temperature Monitor")
         
+        # CONDITION 2 FIXED: Responsive window sizing
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        window_width = min(1200, screen_width - 100)
+        window_height = min(800, screen_height - 100)
+        self.root.geometry(f"{window_width}x{window_height}")
+        
+        # Make window responsive
+        self.root.minsize(1000, 700)  # Set minimum window size
+        
+        # Center the window on screen
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        self.root.geometry(f"+{x}+{y}")
+        
         # Initialize theme manager
         self.theme_manager = ThemeManager()
         self.colors = self.theme_manager.get_theme()
-        
-        # Set window size
-        self.root.geometry("1200x800")
-        self.root.state('zoomed')  # Maximize window
         
         # Monitoring state
         self.is_monitoring = True
@@ -1172,7 +1736,7 @@ class TemperatureMonitor:
                        focusthickness=2,
                        focuscolor=self.colors['primary'])
         
-        # FIXED CONDITION 2: Redesigned combobox for better visibility
+        # Redesigned combobox for better visibility
         style.configure('Modern.TCombobox',
                        fieldbackground=self.colors['input_bg'],
                        foreground=self.colors['input_fg'],
@@ -1263,24 +1827,30 @@ class TemperatureMonitor:
         main_frame = ttk.Frame(self.bg_canvas, style='Modern.TFrame', padding="20")
         main_frame.pack(fill=tk.BOTH, expand=True)
         
+        # Configure grid weights for responsiveness
+        main_frame.columnconfigure(0, weight=1)
+        main_frame.rowconfigure(1, weight=1)
+        
         # Header section - Centered and professional
         header_frame = ttk.Frame(main_frame, style='Modern.TFrame')
-        header_frame.pack(fill=tk.X, pady=(0, 20))
+        header_frame.grid(row=0, column=0, sticky='ew', pady=(0, 20))
+        header_frame.columnconfigure(0, weight=1)
         
         # Title with centered layout
         title_frame = ttk.Frame(header_frame, style='Modern.TFrame')
-        title_frame.pack(fill=tk.X)
+        title_frame.grid(row=0, column=0, sticky='ew')
+        title_frame.columnconfigure(0, weight=1)
         
         # Left side - Title
         title_label = ttk.Label(title_frame, text="Storage Temperature Monitor", 
                                background=self.colors['surface'],
                                foreground=self.colors['text_primary'],
                                font=("Segoe UI", 20, "bold"))
-        title_label.pack(side=tk.LEFT)
+        title_label.grid(row=0, column=0, sticky='w')
         
         # Right side - Theme toggle and Live Log button
         header_buttons_frame = ttk.Frame(title_frame, style='Modern.TFrame')
-        header_buttons_frame.pack(side=tk.RIGHT)
+        header_buttons_frame.grid(row=0, column=1, sticky='e')
         
         live_log_button = ttk.Button(header_buttons_frame, text="Live Log", 
                                 command=self.show_live_log,
@@ -1294,19 +1864,26 @@ class TemperatureMonitor:
         
         # Main content area - Two column layout
         content_frame = ttk.Frame(main_frame, style='Modern.TFrame')
-        content_frame.pack(fill=tk.BOTH, expand=True)
+        content_frame.grid(row=1, column=0, sticky='nsew')
+        content_frame.columnconfigure(0, weight=3)  # Left column (70%)
+        content_frame.columnconfigure(1, weight=1)  # Right column (30%)
         
         # Left column - Metrics and Graph (70% width)
         left_column = ttk.Frame(content_frame, style='Modern.TFrame')
-        left_column.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 15))
+        left_column.grid(row=0, column=0, sticky='nsew', padx=(0, 15))
+        left_column.columnconfigure(0, weight=1)
+        left_column.rowconfigure(1, weight=1)
         
         # Metrics cards in a compact row
         metrics_frame = ttk.Frame(left_column, style='Modern.TFrame')
-        metrics_frame.pack(fill=tk.X, pady=(0, 15))
+        metrics_frame.grid(row=0, column=0, sticky='ew', pady=(0, 15))
+        metrics_frame.columnconfigure(0, weight=1)
+        metrics_frame.columnconfigure(1, weight=1)
+        metrics_frame.columnconfigure(2, weight=1)
         
         # Average temperature card
         avg_card = ttk.Frame(metrics_frame, style='Card.TFrame', padding="20")
-        avg_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        avg_card.grid(row=0, column=0, sticky='nsew', padx=(0, 10))
         
         ttk.Label(avg_card, text="Average Temperature", 
                  background=self.colors['card_bg'],
@@ -1322,7 +1899,7 @@ class TemperatureMonitor:
         
         # Max temperature card
         max_card = ttk.Frame(metrics_frame, style='Card.TFrame', padding="20")
-        max_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 10))
+        max_card.grid(row=0, column=1, sticky='nsew', padx=(10, 10))
         
         ttk.Label(max_card, text="Max Temperature", 
                  background=self.colors['card_bg'],
@@ -1338,7 +1915,7 @@ class TemperatureMonitor:
         
         # Sensor status card
         sensor_card = ttk.Frame(metrics_frame, style='Card.TFrame', padding="20")
-        sensor_card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0))
+        sensor_card.grid(row=0, column=2, sticky='nsew', padx=(10, 0))
         
         ttk.Label(sensor_card, text="Sensor Status", 
                  background=self.colors['card_bg'],
@@ -1363,9 +1940,11 @@ class TemperatureMonitor:
         
         self.update_sensor_status()
         
-        # FIXED CONDITION 3: Removed "TEMPERATURE HISTORY" label
+        # Graph frame
         graph_frame = ttk.Frame(left_column, style='Card.TFrame', padding="15")
-        graph_frame.pack(fill=tk.BOTH, expand=True)
+        graph_frame.grid(row=1, column=0, sticky='nsew')
+        graph_frame.columnconfigure(0, weight=1)
+        graph_frame.rowconfigure(0, weight=1)
         
         # Create professional matplotlib figure with current theme
         self.update_graph_theme()
@@ -1373,108 +1952,112 @@ class TemperatureMonitor:
         self.fig, self.ax = plt.subplots(figsize=(10, 6))
         self.fig.tight_layout(pad=4.0)
         self.canvas = FigureCanvasTkAgg(self.fig, master=graph_frame)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self.canvas.get_tk_widget().grid(row=0, column=0, sticky='nsew')
         
         # Right column - Controls and Settings (30% width)
         right_column = ttk.Frame(content_frame, style='Modern.TFrame')
-        right_column.pack(side=tk.RIGHT, fill=tk.BOTH, expand=False, padx=(15, 0), ipadx=10)
+        right_column.grid(row=0, column=1, sticky='nsew', padx=(15, 0))
+        right_column.columnconfigure(0, weight=1)
         
         # Alert Controls Section
         alert_frame = ttk.LabelFrame(right_column, text="ALERT CONTROLS", 
                                 style='Card.TLabelframe', padding="15")
-        alert_frame.pack(fill=tk.X, pady=(0, 15))
+        alert_frame.grid(row=0, column=0, sticky='ew', pady=(0, 15))
         
         # Alert status display
         alert_status_frame = ttk.Frame(alert_frame, style='Card.TFrame')
-        alert_status_frame.pack(fill=tk.X, pady=(0, 12))
+        alert_status_frame.grid(row=0, column=0, sticky='ew', pady=(0, 12))
         
         ttk.Label(alert_status_frame, text="Current Status:", 
                  background=self.colors['card_bg'],
                  foreground=self.colors['text_primary'],
-                 font=('Segoe UI', 10, 'bold')).pack(anchor=tk.W)
+                 font=('Segoe UI', 10, 'bold')).grid(row=0, column=0, sticky='w')
         
         self.alert_status_var = tk.StringVar(value="Alerts: ACTIVE")
         alert_status_label = ttk.Label(alert_status_frame, textvariable=self.alert_status_var,
                                  background=self.colors['card_bg'],
                                  foreground=self.colors['success'],
                                  font=('Segoe UI', 11, 'bold'))
-        alert_status_label.pack(anchor=tk.W, pady=(5, 0))
+        alert_status_label.grid(row=1, column=0, sticky='w', pady=(5, 0))
         
         # Alert control buttons in a row
         alert_buttons_frame = ttk.Frame(alert_frame, style='Card.TFrame')
-        alert_buttons_frame.pack(fill=tk.X)
+        alert_buttons_frame.grid(row=1, column=0, sticky='ew')
+        alert_buttons_frame.columnconfigure(0, weight=1)
+        alert_buttons_frame.columnconfigure(1, weight=1)
         
         self.start_button = ttk.Button(alert_buttons_frame, text="Enable Alerts", 
                                   command=self.start_alert_monitoring, 
                                   style='Primary.TButton')
-        self.start_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        self.start_button.grid(row=0, column=0, sticky='ew', padx=(0, 5))
         
         self.stop_button = ttk.Button(alert_buttons_frame, text="Disable Alerts", 
                                  command=self.stop_alert_monitoring, 
                                  state="disabled", 
                                  style='Secondary.TButton')
-        self.stop_button.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(5, 0))
+        self.stop_button.grid(row=0, column=1, sticky='ew', padx=(5, 0))
         
-        # Monitoring Controls Section
+        # CONDITION 4 FIXED: Monitoring Controls Section - Improved spacing and sizing
         monitor_frame = ttk.LabelFrame(right_column, text="MONITORING CONTROLS", 
                                   style='Card.TLabelframe', padding="15")
-        monitor_frame.pack(fill=tk.X, pady=(0, 15))
+        monitor_frame.grid(row=1, column=0, sticky='ew', pady=(0, 15))
         
-        # Refresh rate control
+        # Refresh rate control - Improved layout
         refresh_frame = ttk.Frame(monitor_frame, style='Card.TFrame')
-        refresh_frame.pack(fill=tk.X, pady=(0, 10))
+        refresh_frame.grid(row=0, column=0, sticky='ew', pady=(0, 15))
         
         ttk.Label(refresh_frame, text="Update Interval (seconds):", 
                  background=self.colors['card_bg'],
                  foreground=self.colors['text_primary'],
-                 font=('Segoe UI', 9)).pack(anchor=tk.W)
+                 font=('Segoe UI', 10, 'bold')).grid(row=0, column=0, sticky='w', pady=(0, 8))
         
         self.refresh_rate_var = tk.StringVar(value="2")
-        # FIXED CONDITION 2: Using the redesigned combobox
         refresh_combo = ttk.Combobox(refresh_frame, textvariable=self.refresh_rate_var,
                                 values=["1", "2", "5", "10"], 
-                                width=8,
+                                width=12,
                                 state="readonly",
                                 style='Modern.TCombobox',
                                 height=4)
-        refresh_combo.pack(fill=tk.X, pady=(8, 0))
+        refresh_combo.grid(row=1, column=0, sticky='ew', pady=(0, 10))
         
         refresh_button = ttk.Button(refresh_frame, text="Refresh Now", 
                               command=self.manual_refresh, 
-                              style='Secondary.TButton')
-        refresh_button.pack(fill=tk.X, pady=(8, 0))
+                              style='Primary.TButton')
+        refresh_button.grid(row=2, column=0, sticky='ew')
         
-        # Utility buttons grid
+        # Utility buttons grid - Improved spacing
         utils_frame = ttk.Frame(monitor_frame, style='Card.TFrame')
-        utils_frame.pack(fill=tk.X)
+        utils_frame.grid(row=1, column=0, sticky='ew', pady=(15, 0))
         
         # First row of utility buttons
         utils_row1 = ttk.Frame(utils_frame, style='Card.TFrame')
-        utils_row1.pack(fill=tk.X, pady=(0, 8))
+        utils_row1.grid(row=0, column=0, sticky='ew', pady=(0, 8))
+        utils_row1.columnconfigure(0, weight=1)
+        utils_row1.columnconfigure(1, weight=1)
         
         sensor_button = ttk.Button(utils_row1, text="Sensor Info", 
                               command=self.show_sensor_info, 
                               style='Secondary.TButton')
-        sensor_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        sensor_button.grid(row=0, column=0, sticky='ew', padx=(0, 5))
         
         email_button = ttk.Button(utils_row1, text="Test Email", 
                              command=self.send_test_email, 
                              style='Secondary.TButton')
-        email_button.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(5, 0))
+        email_button.grid(row=0, column=1, sticky='ew', padx=(5, 0))
         
         # Temperature Settings Section
         settings_frame = ttk.LabelFrame(right_column, text="TEMPERATURE SETTINGS", 
                                    style='Card.TLabelframe', padding="15")
-        settings_frame.pack(fill=tk.X, pady=(0, 15))
+        settings_frame.grid(row=2, column=0, sticky='ew', pady=(0, 15))
         
         # Warning temperature
         warning_frame = ttk.Frame(settings_frame, style='Card.TFrame')
-        warning_frame.pack(fill=tk.X, pady=(0, 12))
+        warning_frame.grid(row=0, column=0, sticky='ew', pady=(0, 12))
         
         ttk.Label(warning_frame, text="Warning Threshold (°C):", 
                  background=self.colors['card_bg'],
                  foreground=self.colors['text_primary'],
-                 font=('Segoe UI', 9)).pack(anchor=tk.W)
+                 font=('Segoe UI', 9)).grid(row=0, column=0, sticky='w')
         
         self.warning_var = tk.StringVar(value=str(self.warning_temp))
         warning_entry = ttk.Entry(warning_frame, textvariable=self.warning_var, 
@@ -1482,16 +2065,16 @@ class TemperatureMonitor:
                              style='Modern.TEntry',
                              font=('Segoe UI', 10),
                              justify=tk.CENTER)
-        warning_entry.pack(fill=tk.X, pady=(8, 0))
+        warning_entry.grid(row=1, column=0, sticky='w', pady=(8, 0))
         
         # Critical temperature
         critical_frame = ttk.Frame(settings_frame, style='Card.TFrame')
-        critical_frame.pack(fill=tk.X, pady=(0, 15))
+        critical_frame.grid(row=1, column=0, sticky='ew', pady=(0, 15))
         
         ttk.Label(critical_frame, text="Critical Threshold (°C):", 
                  background=self.colors['card_bg'],
                  foreground=self.colors['text_primary'],
-                 font=('Segoe UI', 9)).pack(anchor=tk.W)
+                 font=('Segoe UI', 9)).grid(row=0, column=0, sticky='w')
         
         self.critical_var = tk.StringVar(value=str(self.critical_temp))
         critical_entry = ttk.Entry(critical_frame, textvariable=self.critical_var, 
@@ -1499,17 +2082,18 @@ class TemperatureMonitor:
                               style='Modern.TEntry',
                               font=('Segoe UI', 10),
                               justify=tk.CENTER)
-        critical_entry.pack(fill=tk.X, pady=(8, 0))
+        critical_entry.grid(row=1, column=0, sticky='w', pady=(8, 0))
         
         # Save Settings button
         update_button = ttk.Button(settings_frame, text="Save Settings", 
                               command=self.update_settings, 
                               style='Primary.TButton')
-        update_button.pack(fill=tk.X)
+        update_button.grid(row=2, column=0, sticky='ew', pady=(10, 0))
         
         # Footer with status information
         footer_frame = ttk.Frame(main_frame, style='Modern.TFrame')
-        footer_frame.pack(fill=tk.X, pady=(20, 0))
+        footer_frame.grid(row=2, column=0, sticky='ew', pady=(20, 0))
+        footer_frame.columnconfigure(0, weight=1)
         
         # Left footer - Update time
         self.last_update_var = tk.StringVar(value="Last update: --")
@@ -1517,15 +2101,16 @@ class TemperatureMonitor:
                                  background=self.colors['surface'],
                                  foreground=self.colors['text_secondary'],
                                  font=("Segoe UI", 9))
-        last_update_label.pack(side=tk.LEFT)
+        last_update_label.grid(row=0, column=0, sticky='w')
         
         # Center footer - Current time
+        # CONDITION 1 FIXED: Time display now shows minutes properly
         self.time_var = tk.StringVar(value="--:--:--")
         time_label = ttk.Label(footer_frame, textvariable=self.time_var,
                           background=self.colors['surface'],
                           foreground=self.colors['text_secondary'],
                           font=("Segoe UI", 9))
-        time_label.pack(side=tk.LEFT, padx=(20, 0))
+        time_label.grid(row=0, column=1, sticky='w', padx=(20, 0))
         
         # Right footer - Next email
         self.next_email_var = tk.StringVar(value="Next report: --")
@@ -1533,7 +2118,7 @@ class TemperatureMonitor:
                                 background=self.colors['surface'],
                                 foreground=self.colors['text_secondary'],
                                 font=("Segoe UI", 9))
-        next_email_label.pack(side=tk.RIGHT)
+        next_email_label.grid(row=0, column=2, sticky='e')
         
         # Configure grid weights for resizing
         self.root.columnconfigure(0, weight=1)
@@ -1576,6 +2161,7 @@ class TemperatureMonitor:
         
     def update_time_display(self):
         """Update the current time display"""
+        # CONDITION 1 FIXED: Time display now properly shows minutes in HH:MM:SS format
         current_time = datetime.datetime.now().strftime("%H:%M:%S")
         self.time_var.set(f"Time: {current_time}")
         
@@ -1770,40 +2356,57 @@ No response is required unless immediate action is indicated above.
         if len(self.temp_history) > 0:
             time_minutes = [t/60 for t in self.time_history]
             
-            # Professional plot styling
-            line = self.ax.plot(time_minutes, list(self.temp_history), 
-                              color=self.colors['primary'], 
-                              linewidth=2.5, 
-                              label='Temperature',
-                              marker='o',
-                              markersize=3,
-                              alpha=0.9)
+            # CONDITION 3 FIXED: Create colored line segments based on temperature thresholds
+            critical_temp = 30
+            warning_temp = 27
             
-            # Professional threshold lines
-            self.ax.axhline(y=self.warning_temp, 
-                          color=self.colors['warning'], 
-                          linestyle='--', 
-                          linewidth=1.5, 
-                          alpha=0.7, 
-                          label=f'Warning ({self.warning_temp}°C)')
+            if len(time_minutes) > 1:
+                # Create segments for different temperature ranges
+                segments = []
+                current_segment = {'times': [time_minutes[0]], 'temps': [self.temp_history[0]], 'color': self.get_temperature_color(self.temp_history[0], critical_temp, warning_temp)}
+                
+                for i in range(1, len(time_minutes)):
+                    current_color = self.get_temperature_color(self.temp_history[i], critical_temp, warning_temp)
+                    
+                    if current_color == current_segment['color']:
+                        # Continue current segment
+                        current_segment['times'].append(time_minutes[i])
+                        current_segment['temps'].append(self.temp_history[i])
+                    else:
+                        # End current segment and start new one
+                        segments.append(current_segment)
+                        current_segment = {'times': [time_minutes[i]], 'temps': [self.temp_history[i]], 'color': current_color}
+                
+                segments.append(current_segment)
+                
+                # Plot each segment with its respective color
+                for segment in segments:
+                    if len(segment['times']) > 1:
+                        self.ax.plot(segment['times'], segment['temps'], 
+                                    color=segment['color'], 
+                                    linewidth=2.5, 
+                                    marker='o',
+                                    markersize=3,
+                                    alpha=0.9)
             
-            self.ax.axhline(y=self.critical_temp, 
-                          color=self.colors['error'], 
-                          linestyle='--', 
-                          linewidth=1.5, 
-                          alpha=0.7, 
-                          label=f'Critical ({self.critical_temp}°C)')
+            # Add legend for temperature ranges
+            from matplotlib.lines import Line2D
+            legend_elements = [
+                Line2D([0], [0], color='blue', lw=3, label='Normal Temperature (<27°C)'),
+                Line2D([0], [0], color='yellow', lw=3, label='Warning (27-30°C)'),
+                Line2D([0], [0], color='red', lw=3, label='Critical (>30°C)')
+            ]
+            self.ax.legend(handles=legend_elements, loc='upper right', fontsize=9, framealpha=0.95)
             
             # Professional labels and title
             self.ax.set_ylabel('Temperature (°C)', fontsize=10, fontweight='bold')
-            self.ax.set_xlabel('Time (minutes)', fontsize=10, fontweight='bold')
             
-            # FIXED CONDITION 1: Add "Temperature Trend" title
+            # CONDITION 1 FIXED: X-axis label now clearly visible
+            self.ax.set_xlabel('Time (Minutes)', fontsize=10, fontweight='bold')
+            
+            # Add "Temperature Trend" title
             self.ax.set_title('Temperature', 
                             fontsize=12, fontweight='bold', pad=20)
-            
-            # Professional legend
-            self.ax.legend(loc='upper right', fontsize=9, framealpha=0.95)
             
             # Professional grid
             self.ax.grid(True, alpha=0.2, linestyle='-')
@@ -1831,7 +2434,7 @@ No response is required unless immediate action is indicated above.
             self.ax.set_xticks([])
             self.ax.set_yticks([])
         
-        # FIXED CONDITION 1: Moved note further down with more spacing
+        # Moved note further down with more spacing
         note_text = "Note: Temperatures shown are adjusted for room temperature (not actual device readings)"
         self.ax.text(0.5, -0.35, note_text, transform=self.ax.transAxes, 
                     fontsize=8, color=self.colors['text_secondary'],
@@ -1842,6 +2445,15 @@ No response is required unless immediate action is indicated above.
         self.fig.tight_layout(rect=[0, 0.12, 1, 0.95])
         
         self.canvas.draw()
+    
+    def get_temperature_color(self, temperature, critical_temp, warning_temp):
+        """Get color based on temperature value"""
+        if temperature >= critical_temp:
+            return 'red'  # Critical
+        elif temperature >= warning_temp:
+            return 'yellow'  # Warning
+        else:
+            return 'blue'  # Normal
     
     def monitor_temperature(self):
         """Main monitoring loop"""
